@@ -1,0 +1,37 @@
+@startuml
+!pragma useVerticalIf on
+start
+note right
+    A. Is it a transition points 
+    between scenes? This be evaluted 
+    through analysing visual data.
+end note
+if (A. Is a good point to insert ad) then (yes)
+    note right
+        B. Create caption and detect captions to 
+        find ideal ad to insert, e.g. automotives,
+        health etc. Also based on visual data.
+    end note
+    if (B. Does the visual data point to a category) then (yes)
+        note left
+        C. Sentiment analysis. Audio data can be 
+        used to get a read on whether is it a
+        positive or a negative context. To get a 
+        more accurate result the subtitles can 
+        be analyzed.
+    end note
+        if (C.Is it a positive moment to insert the add) then (yes)
+            :Insert ad;
+        else 
+            end
+        endif
+    else 
+        end
+    endif
+else
+    end
+endif
+stop
+
+
+@enduml
