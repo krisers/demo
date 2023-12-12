@@ -4,12 +4,14 @@ import cv2
 import numpy as np
 import time
 import scipy
+import copy
 import matplotlib.pyplot as plt
 
 
 from sys import maxsize
 from tensorflow.keras.utils import pad_sequences, to_categorical
 from tensorflow.keras.applications.inception_v3 import preprocess_input
+KP_THRESHOLD = 30
 
 def preprocess(raw_text):
 
@@ -86,14 +88,13 @@ class Image_Caption():
         return vector
 
     def caption_video(self,filename):
-        font = cv2.FONT_HERSHEY_SIMPLEX 
+        font = 0
         org = (50, 50) 
         fontScale = 1
         color = (255, 0, 0) 
         color2 = (0, 0, 255) 
         thickness = 2
         frame_cnt=0
-        fgbg = cv2.bgsegm.createBackgroundSubtractorMOG()
 
         cap = cv2.VideoCapture(filename)
  
@@ -107,30 +108,29 @@ class Image_Caption():
             ret, frame = cap.read()
             if ret == True:
                 frame_cnt +=1
-                if frame_cnt%5==0:
-                    # Display the resulting frame
-                    caption = self.get_caption_per_photo(frame)
-                    frame = cv2.putText(frame, caption, org, font,  
-                    fontScale, color, thickness, cv2.LINE_AA)
-                    fgmask = fgbg.apply(frame)
-                    idx=(fgmask==0)
-                    chx = np.zeros_like(frame)
-                    chx[idx]=frame[idx]
-                    no_zeros = chx[np.where(chx==0)]
-                    chx = cv2.putText(chx, str(no_zeros.size), (150,100), font,  
-                    fontScale, color2, thickness, cv2.LINE_AA)
-                    cv2.imshow('Frame',chx)
-                    scores,(bsc,best_score) = self.scores_per_classs(caption)
-                    print(caption)
-                    print(f'\nBest score-> {bsc}:\t{best_score}')
-                    print(f'no zeros:\t{no_zeros}')
-                    # Press Q on keyboard to  exit
-                    if cv2.waitKey(1000) & 0xFF == ord('q'):
-                        break
+
+                # Display the resulting frame
+                #
+                caption = 'yall'
+                if frame_cnt==1:
+                    pass
                 else:
-                    cv2.imshow('Frame',frame)
+                    matches = self.get_matching_points(cv2.resize(prev,(256,144)),cv2.resize(frame,(256,144)))
+                    frame = cv2.putText(frame, str(matches), org, font,  
+                    fontScale, color, thickness, cv2.LINE_AA)
+                if len(matches) > KP_THRESHOLD:
+                    caption = self.get_caption_per_photo(frame)
+                frame = cv2.putText(frame, str(matches), org, font,  
+                    fontScale, color, thickness, cv2.LINE_AA)
+                cv2.imshow('Frame',frame)
+                scores,(bsc,best_score) = self.scores_per_classs(caption)
+                print(caption)
+                print(f'\nBest score-> {bsc}:\t{best_score}')
+                # Press Q on keyboard to  exit
                 if cv2.waitKey(20) & 0xFF == ord('q'):
                     break
+
+                prev = copy.deepcopy(frame)
                             
         # Break the loop
             else: 
@@ -162,3 +162,26 @@ class Image_Caption():
                 best_score = scores[c]
                 best_score_class = c
         return scores , (best_score_class,best_score)
+    
+    
+    def get_matching_points(self,prev_frame,current_frame):
+        t0 = time.time()
+        orb = cv2.SIFT_create()
+
+        kp1, des1 = orb.detectAndCompute(prev_frame,None)
+        kp2, des2 = orb.detectAndCompute(current_frame,None)
+
+        
+        bf = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
+
+        matches = bf.knnMatch(des1,des2,k=2)
+
+        good = []
+        for m,n in matches:
+            if m.distance < 0.75*n.distance:
+                good.append([m])        
+
+        print(f'Time passed kp: {time.time()-t0}')
+
+        return len(good)
+
