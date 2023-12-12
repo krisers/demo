@@ -121,7 +121,7 @@ class Image_Caption():
                 else:
                     matches = self.get_matching_points(cv2.resize(prev,(256,144)),cv2.resize(frame,(256,144)))
                 if matches < KP_THRESHOLD or frame_cnt==1:
-                    print(f'/n{frame_cnt}.')
+                    print(f'\n{frame_cnt}.')
                     caption = self.get_caption_per_photo(frame)
                     scores,(bsc,best_score) = self.scores_per_class(caption)
 
@@ -173,22 +173,27 @@ class Image_Caption():
         t0 = time.time()
         orb = cv2.SIFT_create()
 
-        kp1, des1 = orb.detectAndCompute(prev_frame,None)
-        kp2, des2 = orb.detectAndCompute(current_frame,None)
 
-        
-        bf = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
+        try:
+            kp1, des1 = orb.detectAndCompute(prev_frame,None)
+            kp2, des2 = orb.detectAndCompute(current_frame,None)
 
-        matches = bf.knnMatch(des1,des2,k=2)
+            
+            bf = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
 
-        good = []
-        for m,n in matches:
-            if m.distance < 0.75*n.distance:
-                good.append([m])        
+            matches = bf.knnMatch(des1,des2,k=2)
 
-        print(f'Time passed kp: {time.time()-t0}')
+            good = []
+            for m,n in matches:
+                if m.distance < 0.75*n.distance:
+                    good.append([m])        
 
-        return len(good)
+            print(f'Time passed kp: {time.time()-t0}')
+
+            return len(good)
+        except:
+            print(f'Error in kp: {len(kp1)} - {len(kp2)}')
+            return 0
     
 
     
