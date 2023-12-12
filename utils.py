@@ -96,6 +96,10 @@ class Image_Caption():
         thickness = 2
         frame_cnt=0
 
+        matches = 0
+        caption = 'captplaceholder'
+        
+
         cap = cv2.VideoCapture(filename)
  
         if (cap.isOpened()== False): 
@@ -111,19 +115,18 @@ class Image_Caption():
 
                 # Display the resulting frame
                 #
-                caption = 'yall'
                 if frame_cnt==1:
                     pass
                 else:
                     matches = self.get_matching_points(cv2.resize(prev,(256,144)),cv2.resize(frame,(256,144)))
-                    frame = cv2.putText(frame, str(matches), org, font,  
-                    fontScale, color, thickness, cv2.LINE_AA)
-                if len(matches) > KP_THRESHOLD:
+                if matches < KP_THRESHOLD or frame_cnt==1:
+                    print(f'/n{frame_cnt}.')
                     caption = self.get_caption_per_photo(frame)
-                frame = cv2.putText(frame, str(matches), org, font,  
+                    scores,(bsc,best_score) = self.scores_per_class(caption)
+
+                frame = cv2.putText(frame, f'{caption}', org, font,  
                     fontScale, color, thickness, cv2.LINE_AA)
                 cv2.imshow('Frame',frame)
-                scores,(bsc,best_score) = self.scores_per_classs(caption)
                 print(caption)
                 print(f'\nBest score-> {bsc}:\t{best_score}')
                 # Press Q on keyboard to  exit
@@ -133,6 +136,7 @@ class Image_Caption():
                 prev = copy.deepcopy(frame)
                             
         # Break the loop
+
             else: 
                 break
         
@@ -152,7 +156,7 @@ class Image_Caption():
         #print('Word Embedding method with a cosine distance asses that our two sentences are similar to',round((1-cosine)*100,2),'%')
         return round((1-cosine)*100,3)
 
-    def scores_per_classs(self,caption):
+    def scores_per_class(self,caption):
         scores = {}
         best_score = 0
         best_score_class = ''
