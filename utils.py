@@ -8,10 +8,12 @@ import copy
 import librosa
 import matplotlib.pyplot as plt
 
+from skimage.filters import threshold_multiotsu
 
 from sys import maxsize
 from tensorflow.keras.utils import pad_sequences, to_categorical
 from tensorflow.keras.applications.inception_v3 import preprocess_input
+
 KP_THRESHOLD = 30
 
 def preprocess(raw_text):
@@ -88,15 +90,20 @@ class Image_Caption():
         print(f'Time passed: {time.time()-t0}')
         return vector
 
-    def caption_video(self,filename):
+    def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0'):
+        if is_url:
+            os.system(f'youtube-dl --verbose {url} -o {filename}')
         font = 0
         org = (50, 50) 
         fontScale = 1
         color = (255, 0, 0) 
         color2 = (0, 0, 255) 
         thickness = 2
-        frame_cnt=0
-
+        frame_cnt=-1
+        mw = 64
+        mh = 36
+        mstack = 10
+        vis_frames = np.zeros((mh,mw*mstack,3),dtype=np.uint8)
         matches = 0
         caption = 'captplaceholder'
         
@@ -112,24 +119,59 @@ class Image_Caption():
         # Capture frame-by-frame
             ret, frame = cap.read()
             if ret == True:
+                #img = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                # ret,th1 = cv2.threshold(img,127,255,cv2.THRESH_BINARY)
+                # #th2 = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY,11,2)
+                # ret2,th2 = cv2.threshold(img,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+                # #th3 = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,2)
+                # blur = cv2.GaussianBlur(img,(7,7),0)
+                # ret3,th3 = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+                # titles = ['Original Image', 'Global Thresholding (v = 127)',
+                #             'Adaptive Mean Thresholding', 'Adaptive Gaussian Thresholding']
+                # images = [frame, th1, th2, th3]
+                # for i in range(4):
+                #     plt.subplot(2,2,i+1),plt.imshow(images[i],'gray')
+                #     plt.title(titles[i])
+                #     plt.xticks([]),plt.yticks([])
+                # plt.show()
+                # thresholds = threshold_multiotsu(img,classes=5)
+                # # Generate regions
+                # regions = np.digitize(img, bins=thresholds)
+                # plt.imshow(regions, cmap='jet')
+                # plt.show()
+
                 frame_cnt +=1
 
                 # Display the resulting frame
                 #
-                if frame_cnt==1:
+                mini_frame = cv2.cvtColor(cv2.resize(frame,(mw,mh)), cv2.COLOR_BGR2RGB)
+
+                if frame_cnt==0:
                     pass
                 else:
                     matches = self.get_matching_points(cv2.resize(prev,(256,144)),cv2.resize(frame,(256,144)))
-                if matches < KP_THRESHOLD or frame_cnt==1:
+                if matches < KP_THRESHOLD or frame_cnt==0:
                     print(f'\n{frame_cnt}.')
                     caption = self.get_caption_per_photo(frame)
                     scores,(bsc,best_score) = self.scores_per_class(caption)
+                    mini_frame[:,:5,0] = 255
+                    mini_frame[:,:5,1] = 0
+                    mini_frame[:,:5,2] = 255
+                
+                    print(caption)
+                    print(f'\nBest score-> {bsc}:\t{best_score}')
+                if frame_cnt%mstack==0 and frame_cnt!=0:
+                    plt.axis('off')
+                    plt.imshow(vis_frames)
+                    plt.show()
+                    vis_frames*=0
+                indx = (frame_cnt%mstack)
+                vis_frames[:,indx*mw:(indx+1)*mw,:] += mini_frame
 
                 frame = cv2.putText(frame, f'{caption}', org, font,  
                     fontScale, color, thickness, cv2.LINE_AA)
                 cv2.imshow('Frame',frame)
-                print(caption)
-                print(f'\nBest score-> {bsc}:\t{best_score}')
+
                 # Press Q on keyboard to  exit
                 if cv2.waitKey(20) & 0xFF == ord('q'):
                     break
@@ -188,7 +230,7 @@ class Image_Caption():
                 if m.distance < 0.75*n.distance:
                     good.append([m])        
 
-            print(f'Time passed kp: {time.time()-t0}')
+            #print(f'Time passed kp: {time.time()-t0}')
 
             return len(good)
         except:
