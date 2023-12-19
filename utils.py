@@ -92,7 +92,7 @@ class Image_Caption():
 
     def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0'):
         if is_url:
-            os.system(f'youtube-dl --verbose {url} -o {filename}')
+            os.system(f'yt-dlp --verbose  --recode-video mp4 {url} -o {filename}')
         font = 0
         org = (50, 50) 
         fontScale = 1
@@ -150,7 +150,7 @@ class Image_Caption():
                     pass
                 else:
                     matches = self.get_matching_points(cv2.resize(prev,(256,144)),cv2.resize(frame,(256,144)))
-                if matches < KP_THRESHOLD or frame_cnt==0:
+                if matches == False or frame_cnt==0:
                     print(f'\n{frame_cnt}.')
                     caption = self.get_caption_per_photo(frame)
                     scores,(bsc,best_score) = self.scores_per_class(caption)
@@ -161,6 +161,7 @@ class Image_Caption():
                     print(caption)
                     print(f'\nBest score-> {bsc}:\t{best_score}')
                 if frame_cnt%mstack==0 and frame_cnt!=0:
+                    plt.figure(figsize = (17,2))
                     plt.axis('off')
                     plt.imshow(vis_frames)
                     plt.show()
@@ -212,15 +213,25 @@ class Image_Caption():
     
     
     def get_matching_points(self,prev_frame,current_frame):
+        ismatch = True
         t0 = time.time()
+        prev_frame = cv2.cvtColor(prev_frame,cv2.COLOR_BGR2GRAY)
+        current_frame = cv2.cvtColor(current_frame,cv2.COLOR_BGR2GRAY)
         orb = cv2.SIFT_create()
-
-
+        THRESHOLD_FEATURES = 40
+        
         try:
             kp1, des1 = orb.detectAndCompute(prev_frame,None)
             kp2, des2 = orb.detectAndCompute(current_frame,None)
 
-            
+            if len(kp1)<THRESHOLD_FEATURES or len(kp2)<THRESHOLD_FEATURES:
+                diff = self.compare_frames(prev_frame,current_frame)
+                if diff < 50000/(256*144):
+                    return True
+                else:
+                    print(f'Diff: {diff}')
+                    return False
+
             bf = cv2.DescriptorMatcher_create(cv2.DescriptorMatcher_FLANNBASED)
 
             matches = bf.knnMatch(des1,des2,k=2)
@@ -231,11 +242,28 @@ class Image_Caption():
                     good.append([m])        
 
             #print(f'Time passed kp: {time.time()-t0}')
+            if len(good) < KP_THRESHOLD:
+                ismatch=False
 
-            return len(good)
-        except:
+            return ismatch
+        except Exception as E:
+            print(f'Exception: {E}')
             print(f'Error in kp: {len(kp1)} - {len(kp2)}')
             return 0
+        
+    def compare_frames(self,prev_frame,current_frame):
+        t0 =time.time()
+        p_hist,p_bins= np.histogram(prev_frame, bins=256, range=(0,255),density=True)
+        c_hist,p_bins= np.histogram(current_frame, bins=256, range=(0,255),density=True)
+        # plt.title('histos')
+        # plt.plot(np.arange(256),p_hist,'r',np.arange(256),c_hist,'b')
+        # plt.show()
+        diff = np.abs(p_hist - c_hist)
+        # plt.title(np.sum(diff))
+        # plt.hist(diff,256,[0,256])
+        # plt.show()
+        return np.sum(diff)
+
     
 
     
