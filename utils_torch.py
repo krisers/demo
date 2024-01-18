@@ -10,7 +10,7 @@ import librosa
 import matplotlib.pyplot as plt
 import torchvision.transforms as transforms
 import torch.nn.functional as F
-
+from nltk.tokenize.treebank import TreebankWordDetokenizer
 
 from sys import maxsize
 
@@ -147,6 +147,7 @@ class Image_Caption():
         return (1- scipy.spatial.distance.cosine(self.w2v[word1], self.w2v[word2]))
 
     def cosine_distance_wordembedding_method(self,s1, s2):
+        print(f'Captions: \n{s1}\n{s2}')
         vector_1 = np.mean([self.w2v[word] for word in preprocess(s1)],axis=0)
         vector_2 = np.mean([self.w2v[word] for word in preprocess(s2)],axis=0)
         cosine = scipy.spatial.distance.cosine(vector_1, vector_2)
@@ -309,6 +310,7 @@ class Image_Caption():
 
             # Convert unrolled indices to actual indices of scores
             prev_word_inds = top_k_words / vocab_size  # (s)
+            prev_word_inds = prev_word_inds.to(torch.int)
             next_word_inds = top_k_words % vocab_size  # (s)
 
             # Add new words to sequences, alphas
@@ -348,7 +350,12 @@ class Image_Caption():
         seq = complete_seqs[i]
         alphas = complete_seqs_alpha[i]
 
-        return seq, alphas
+        rev_word_map = {v: k for k, v in self.word_map.items()}
+        seq_words = [rev_word_map[ind] for ind in seq]
+        seq_words = [s for s in seq_words if (s!='<start>' and s!='<end>')] 
+        sentence = TreebankWordDetokenizer().detokenize(seq_words)
+
+        return sentence
 
 
     
