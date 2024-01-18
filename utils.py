@@ -6,11 +6,13 @@ import time
 import scipy
 import copy
 import librosa
+import pydub
 import matplotlib.pyplot as plt
-
-from skimage.filters import threshold_multiotsu
+import shutil
 
 from sys import maxsize
+from openai import OpenAI
+from pydub import AudioSegment
 from tensorflow.keras.utils import pad_sequences, to_categorical
 from tensorflow.keras.applications.inception_v3 import preprocess_input
 
@@ -28,6 +30,20 @@ def get_tier(filename):
         data = my_file.read() 
         data_list = data.split('\n')
     return data_list
+
+def chunks_video(filename):
+    vid = AudioSegment.from_file(filename,'mp4')
+    chunk_length = 2000 # in ms
+    chunk_max = (len(vid)//chunk_length) +1
+    print(f'Length video: {len(vid)}')
+    print(f'Chunks video: {chunk_max}')
+
+    folder_path = 'temp_' + filename.split('/')[-1]
+    os.mkdir(folder_path)
+    for i in range(chunk_max):
+        chunk = vid[i*chunk_length:(i+1)*chunk_length]
+        chunk.export(f'{folder_path}/{i}.mp3',format='mp3')
+    return folder_path, int(chunk_length/1000)  # in sec
 
 class Image_Caption():
     def __init__(self,
@@ -90,11 +106,14 @@ class Image_Caption():
         print(f'Time passed: {time.time()-t0}')
         return vector
 
-    def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0'):
+    def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0',subtitles:bool = False):
         if is_url:
             os.system(f'yt-dlp --verbose  --recode-video mp4 {url} -o {filename}')
+        client = OpenAI()
+
         font = 0
         org = (50, 50) 
+        org2 = (50,550)
         fontScale = 1
         color = (255, 0, 0) 
         color2 = (0, 0, 255) 
@@ -106,16 +125,28 @@ class Image_Caption():
         vis_frames = np.zeros((mh,mw*mstack,3),dtype=np.uint8)
         matches = 0
         caption = 'captplaceholder'
-        
+        folder_chunks = None
+        chunk_len = None
+        chunk_files = []
+        subtitle_text = ''
 
         cap = cv2.VideoCapture(filename)
+        fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
+
+        print(f"{fps} frames per second")
+
  
         if (cap.isOpened()== False): 
             print("Error opening video stream or file")
         
+        if subtitles:
+            folder_chunks, chunk_len = chunks_video(filename)
+            frames_interval = fps*chunk_len
+            print(f'Frames interval:\t{frames_interval}')
+            chunk_files = [f'{folder_chunks}/{f}' for f in os.listdir(folder_chunks)]
+
         # Read until video is completed
         while(cap.isOpened()):
-            
         # Capture frame-by-frame
             ret, frame = cap.read()
             if ret == True:
@@ -139,6 +170,16 @@ class Image_Caption():
                 # regions = np.digitize(img, bins=thresholds)
                 # plt.imshow(regions, cmap='jet')
                 # plt.show()
+                if frame_cnt%frames_interval==0 and subtitles:
+                    audio_file= open(chunk_files[frame_cnt//frames_interval], "rb")
+                    transcript = client.audio.transcriptions.create(
+                    model="whisper-1", 
+                    file=audio_file
+                    )
+                    print(transcript.text)
+
+                    subtitle_text = transcript.text
+                    print(subtitle_text)
 
                 frame_cnt +=1
 
@@ -171,6 +212,9 @@ class Image_Caption():
 
                 frame = cv2.putText(frame, f'{caption}', org, font,  
                     fontScale, color, thickness, cv2.LINE_AA)
+                if subtitles:
+                    frame = cv2.putText(frame, f'{subtitle_text}', org2, font,  
+                        fontScale, color2, thickness, cv2.LINE_AA)
                 cv2.imshow('Frame',frame)
 
                 # Press Q on keyboard to  exit
@@ -189,6 +233,9 @@ class Image_Caption():
         
         # Closes all the frames
         cv2.destroyAllWindows()
+
+        if folder_chunks is not None:
+            shutil.rmtree(folder_chunks)
 
     def cosine_distance_between_two_words(self,word1, word2):
         return (1- scipy.spatial.distance.cosine(self.w2v[word1], self.w2v[word2]))
