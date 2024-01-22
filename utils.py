@@ -12,6 +12,7 @@ import shutil
 
 from sys import maxsize
 from openai import OpenAI
+import whisper
 from pydub import AudioSegment
 from tensorflow.keras.utils import pad_sequences, to_categorical
 from tensorflow.keras.applications.inception_v3 import preprocess_input
@@ -129,6 +130,7 @@ class Image_Caption():
         chunk_len = None
         chunk_files = []
         subtitle_text = ''
+        model = whisper.load_model("base")
 
         cap = cv2.VideoCapture(filename)
         fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
@@ -171,14 +173,16 @@ class Image_Caption():
                 # plt.imshow(regions, cmap='jet')
                 # plt.show()
                 if frame_cnt%frames_interval==0 and subtitles:
-                    audio_file= open(chunk_files[frame_cnt//frames_interval], "rb")
-                    transcript = client.audio.transcriptions.create(
-                    model="whisper-1", 
-                    file=audio_file
-                    )
-                    print(transcript.text)
+                    #os.system(f'whisper --model base "{chunk_files[frame_cnt//frames_interval]}" --language=en')
+                    # audio_file= open(chunk_files[frame_cnt//frames_interval], "rb")
+                    # transcript = client.audio.transcriptions.create(
+                    # model="whisper-1", 
+                    # file=audio_file
+                    # )
+                    result = model.transcribe(f'{chunk_files[frame_cnt//frames_interval]}')
+                    print(result["text"])
 
-                    subtitle_text = transcript.text
+                    subtitle_text = result["text"]
                     print(subtitle_text)
 
                 frame_cnt +=1
