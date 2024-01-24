@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import shutil
 
 from sys import maxsize
-from openai import OpenAI
 import whisper
 from pydub import AudioSegment
 from tensorflow.keras.utils import pad_sequences, to_categorical
@@ -32,17 +31,17 @@ def get_tier(filename):
         data_list = data.split('\n')
     return data_list
 
-def chunks_video(filename):
+def chunks_video(filename,clen:int=30000):
     vid = AudioSegment.from_file(filename,'mp4')
-    chunk_length = 2000 # in ms
-    chunk_max = (len(vid)//chunk_length) +1
+    chunk_length = clen # in ms 
+    chunk_max = 1#(len(vid)//chunk_length) +1
     print(f'Length video: {len(vid)}')
     print(f'Chunks video: {chunk_max}')
 
     folder_path = 'temp_' + filename.split('/')[-1]
     os.mkdir(folder_path)
     for i in range(chunk_max):
-        chunk = vid[i*chunk_length:(i+1)*chunk_length]
+        chunk = vid [:]#vid[i*chunk_length:(i+1)*chunk_length]
         chunk.export(f'{folder_path}/{i}.mp3',format='mp3')
     return folder_path, int(chunk_length/1000)  # in sec
 
@@ -110,7 +109,6 @@ class Image_Caption():
     def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0',subtitles:bool = False):
         if is_url:
             os.system(f'yt-dlp --verbose  --recode-video mp4 {url} -o {filename}')
-        client = OpenAI()
 
         font = 0
         org = (50, 50) 
@@ -130,7 +128,7 @@ class Image_Caption():
         chunk_len = None
         chunk_files = []
         subtitle_text = ''
-        model = whisper.load_model("base")
+        modelw = whisper.load_model("small")
 
         cap = cv2.VideoCapture(filename)
         fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
@@ -140,51 +138,30 @@ class Image_Caption():
  
         if (cap.isOpened()== False): 
             print("Error opening video stream or file")
-        
+        subs = []
         if subtitles:
             folder_chunks, chunk_len = chunks_video(filename)
-            frames_interval = fps*chunk_len
-            print(f'Frames interval:\t{frames_interval}')
             chunk_files = [f'{folder_chunks}/{f}' for f in os.listdir(folder_chunks)]
 
+            result = modelw.transcribe(f'{chunk_files[0]}',language='en')
+            for it in result['segments']:
+                subs.append( ( int(round(fps*it["start"])) ,int(round(it["end"]*fps)) ,it["text"]))
+            frames_interval = fps*chunk_len
+            print(f'Frames interval:\t{frames_interval}')
+            
         # Read until video is completed
+        subs_index=0
         while(cap.isOpened()):
         # Capture frame-by-frame
             ret, frame = cap.read()
             if ret == True:
-                #img = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
-                # ret,th1 = cv2.threshold(img,127,255,cv2.THRESH_BINARY)
-                # #th2 = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY,11,2)
-                # ret2,th2 = cv2.threshold(img,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
-                # #th3 = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,2)
-                # blur = cv2.GaussianBlur(img,(7,7),0)
-                # ret3,th3 = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
-                # titles = ['Original Image', 'Global Thresholding (v = 127)',
-                #             'Adaptive Mean Thresholding', 'Adaptive Gaussian Thresholding']
-                # images = [frame, th1, th2, th3]
-                # for i in range(4):
-                #     plt.subplot(2,2,i+1),plt.imshow(images[i],'gray')
-                #     plt.title(titles[i])
-                #     plt.xticks([]),plt.yticks([])
-                # plt.show()
-                # thresholds = threshold_multiotsu(img,classes=5)
-                # # Generate regions
-                # regions = np.digitize(img, bins=thresholds)
-                # plt.imshow(regions, cmap='jet')
-                # plt.show()
-                if frame_cnt%frames_interval==0 and subtitles:
-                    #os.system(f'whisper --model base "{chunk_files[frame_cnt//frames_interval]}" --language=en')
-                    # audio_file= open(chunk_files[frame_cnt//frames_interval], "rb")
-                    # transcript = client.audio.transcriptions.create(
-                    # model="whisper-1", 
-                    # file=audio_file
-                    # )
-                    result = model.transcribe(f'{chunk_files[frame_cnt//frames_interval]}')
-                    print(result["text"])
 
-                    subtitle_text = result["text"]
-                    print(subtitle_text)
-
+                if subtitles:
+                    if subs[subs_index][1]<frame_cnt:
+                        subtitle_text = subs[subs_index][2]
+                    else:
+                        subs_index+=1
+                        subtitle_text = subs[subs_index][2]
                 frame_cnt +=1
 
                 # Display the resulting frame
