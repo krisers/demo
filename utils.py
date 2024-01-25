@@ -9,6 +9,7 @@ import librosa
 import pydub
 import matplotlib.pyplot as plt
 import shutil
+from PIL import Image, ImageDraw, ImageFont
 
 from sys import maxsize
 import whisper
@@ -34,15 +35,18 @@ def get_tier(filename):
 def chunks_video(filename,clen:int=30000):
     vid = AudioSegment.from_file(filename,'mp4')
     chunk_length = clen # in ms 
-    chunk_max = 1#(len(vid)//chunk_length) +1
+    chunk_max = (len(vid)//chunk_length) +1
     print(f'Length video: {len(vid)}')
     print(f'Chunks video: {chunk_max}')
 
     folder_path = 'temp_' + filename.split('/')[-1]
     os.mkdir(folder_path)
+    #one_segmenet containing whole audio
+    chunk = vid [:]
+    chunk.export(f'{filename}-whole.mp3',format='mp3')
     for i in range(chunk_max):
-        chunk = vid [:]#vid[i*chunk_length:(i+1)*chunk_length]
-        chunk.export(f'{folder_path}/{i}.mp3',format='mp3')
+        chunk = vid[i*chunk_length:(i+1)*chunk_length]
+        chunk.export(f'{folder_path}/{i:05d}.mp3',format='mp3')
     return folder_path, int(chunk_length/1000)  # in sec
 
 class Image_Caption():
@@ -106,7 +110,7 @@ class Image_Caption():
         print(f'Time passed: {time.time()-t0}')
         return vector
 
-    def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0',subtitles:bool = False):
+    def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0',subtitles:bool = False,languag:str='en'):
         if is_url:
             os.system(f'yt-dlp --verbose  --recode-video mp4 {url} -o {filename}')
 
@@ -132,6 +136,8 @@ class Image_Caption():
 
         cap = cv2.VideoCapture(filename)
         fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
+        size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        out = cv2.VideoWriter('sample_with_subs.mp4',cv2.VideoWriter_fourcc('m','p','4','v'), fps, size)
 
         print(f"{fps} frames per second")
 
@@ -140,29 +146,45 @@ class Image_Caption():
             print("Error opening video stream or file")
         subs = []
         if subtitles:
-            folder_chunks, chunk_len = chunks_video(filename)
-            chunk_files = [f'{folder_chunks}/{f}' for f in os.listdir(folder_chunks)]
+            ts0 = time.time()
+            folder_chunks, chunk_len = chunks_video(filename,clen=2000)
+            chunk_files = [f'{folder_chunks}/{f}' for f in sorted(os.listdir(folder_chunks))]
 
-            result = modelw.transcribe(f'{chunk_files[0]}',language='en')
-            for it in result['segments']:
-                subs.append( ( int(round(fps*it["start"])) ,int(round(it["end"]*fps)) ,it["text"]))
+
             frames_interval = fps*chunk_len
+            print(f'Times passed for subtitles generation: {time.time()-ts0}')
             print(f'Frames interval:\t{frames_interval}')
             
         # Read until video is completed
         subs_index=0
+        index_segment = 0
         while(cap.isOpened()):
         # Capture frame-by-frame
             ret, frame = cap.read()
             if ret == True:
+                frame_cnt +=1
 
                 if subtitles:
-                    if subs[subs_index][1]<frame_cnt:
-                        subtitle_text = subs[subs_index][2]
-                    else:
-                        subs_index+=1
-                        subtitle_text = subs[subs_index][2]
-                frame_cnt +=1
+
+
+                    if frame_cnt%frames_interval==0:
+                        index_segment = frame_cnt//frames_interval
+                        result = modelw.transcribe(f'{chunk_files[index_segment]}',language=languag)
+                        for it in result['segments']:
+                            subs.append( ( int(round(fps*it["start"])+index_segment*frames_interval)
+                                           ,int(round(it["end"]*fps)+index_segment*frames_interval),
+                                           it["text"]))
+                        print(f'Start:\t{it["start"]}\tEnd:\t{it["end"]}Text:\t{it["text"]}')
+                    try:
+                        if subs[subs_index][1]>frame_cnt:
+                            subtitle_text = subs[subs_index][2]
+                        elif subs_index<len(subs)-1:
+                            subs_index+=1
+                            subtitle_text = subs[subs_index][2]
+                        else:
+                            subtitle_text = ''
+                    except IndexError as E:
+                        print(f'OIndex Error : {E}')
 
                 # Display the resulting frame
                 #
@@ -174,7 +196,8 @@ class Image_Caption():
                     matches = self.get_matching_points(cv2.resize(prev,(256,144)),cv2.resize(frame,(256,144)))
                 if matches == False or frame_cnt==0:
                     print(f'\n{frame_cnt}.')
-                    caption = self.get_caption_per_photo(frame)
+                    #caption = self.get_caption_per_photo(frame)
+                    caption = 'place to be'
                     scores,(bsc,best_score) = self.scores_per_class(caption)
                     mini_frame[:,:5,0] = 255
                     mini_frame[:,:5,1] = 0
@@ -191,12 +214,21 @@ class Image_Caption():
                 indx = (frame_cnt%mstack)
                 vis_frames[:,indx*mw:(indx+1)*mw,:] += mini_frame
 
-                frame = cv2.putText(frame, f'{caption}', org, font,  
-                    fontScale, color, thickness, cv2.LINE_AA)
+                #frame = cv2.putText(frame, f'{caption}', org, font, fontScale, color, thickness, cv2.LINE_AA)
                 if subtitles:
-                    frame = cv2.putText(frame, f'{subtitle_text}', org2, font,  
-                        fontScale, color2, thickness, cv2.LINE_AA)
+                    try:
+                        #print(subtitle_text)
+                        pil_image = Image.fromarray(frame)
+                        font = ImageFont.truetype("/usr/share/fonts/truetype/freefont/FreeMono.ttf", 40, encoding="unic")
+                        draw = ImageDraw.Draw(pil_image)
+                        draw.text((30, 30), subtitle_text, font=font,fill="#0000FF")
+                        frame = np.asarray(pil_image)
+
+                        #frame = cv2.putText(frame, f'{subtitle_text}', org2, font,  fontScale, color2, thickness, cv2.LINE_AA)
+                    except IndexError:
+                        pass
                 cv2.imshow('Frame',frame)
+                out.write(frame)
 
                 # Press Q on keyboard to  exit
                 if cv2.waitKey(20) & 0xFF == ord('q'):
@@ -214,6 +246,8 @@ class Image_Caption():
         
         # Closes all the frames
         cv2.destroyAllWindows()
+ 
+        out.release()
 
         if folder_chunks is not None:
             shutil.rmtree(folder_chunks)
