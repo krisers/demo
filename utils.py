@@ -10,6 +10,9 @@ import pydub
 import matplotlib.pyplot as plt
 import shutil
 from PIL import Image, ImageDraw, ImageFont
+from subprocess import run, CalledProcessError
+from datetime import timedelta
+from srt import Subtitle, compose
 
 from sys import maxsize
 import whisper
@@ -18,6 +21,47 @@ from tensorflow.keras.utils import pad_sequences, to_categorical
 from tensorflow.keras.applications.inception_v3 import preprocess_input
 
 KP_THRESHOLD = 30
+SAMPLE_RATE = 16000
+
+def load_audio(file: str, sr: int = SAMPLE_RATE):
+    """
+    Open an audio file and read as mono waveform, resampling as necessary
+ 
+    Parameters
+    ----------
+    file: str
+        The audio file to open
+ 
+    sr: int
+        The sample rate to resample the audio if necessary
+ 
+    Returns
+    -------
+    A NumPy array containing the audio waveform, in float32 dtype.
+    """
+ 
+    # This launches a subprocess to decode audio while down-mixing
+    # and resampling as necessary.  Requires the ffmpeg CLI in PATH.
+    # fmt: off
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+        "-threads", "0",
+        "-i", file,
+        "-f", "s16le",
+        "-ac", "1",
+        "-acodec", "pcm_s16le",
+        "-ar", str(sr),
+        "-"
+    ]
+    # fmt: on
+    try:
+        out = run(cmd, capture_output=True, check=True).stdout
+    except CalledProcessError as e:
+        raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
+    print('Loading audio')
+
+    return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
 
 def preprocess(raw_text):
 
@@ -32,9 +76,13 @@ def get_tier(filename):
         data_list = data.split('\n')
     return data_list
 
-def chunks_video(filename,clen:int=30000):
+def chunks_video(filename,clen:int=30):
     vid = AudioSegment.from_file(filename,'mp4')
-    chunk_length = clen # in ms 
+    if clen ==-1:
+        chunk_length = len(vid)
+    else:
+        chunk_length = clen * 1000 # in ms 
+
     chunk_max = (len(vid)//chunk_length) +1
     print(f'Length video: {len(vid)}')
     print(f'Chunks video: {chunk_max}')
@@ -42,12 +90,15 @@ def chunks_video(filename,clen:int=30000):
     folder_path = 'temp_' + filename.split('/')[-1]
     os.mkdir(folder_path)
     #one_segmenet containing whole audio
-    chunk = vid [:]
-    chunk.export(f'{filename}-whole.mp3',format='mp3')
-    for i in range(chunk_max):
-        chunk = vid[i*chunk_length:(i+1)*chunk_length]
+    if clen ==-1:
+        i=0
+        chunk = vid [:]
         chunk.export(f'{folder_path}/{i:05d}.mp3',format='mp3')
-    return folder_path, int(chunk_length/1000)  # in sec
+    else:
+        for i in range(chunk_max):
+            chunk = vid[i*chunk_length:(i+1)*chunk_length]
+            chunk.export(f'{folder_path}/{i:05d}.mp3',format='mp3')
+    return folder_path, chunk_length  # in sec
 
 class Image_Caption():
     def __init__(self,
@@ -113,7 +164,7 @@ class Image_Caption():
     def caption_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0',subtitles:bool = False,languag:str='en'):
         if is_url:
             os.system(f'yt-dlp --verbose  --recode-video mp4 {url} -o {filename}')
-
+            print('Finished downloading.')
         font = 0
         org = (50, 50) 
         org2 = (50,550)
@@ -132,7 +183,8 @@ class Image_Caption():
         chunk_len = None
         chunk_files = []
         subtitle_text = ''
-        modelw = whisper.load_model("small")
+        modelw = whisper.load_model("medium")
+        subs_objs = []
 
         cap = cv2.VideoCapture(filename)
         fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
@@ -145,19 +197,27 @@ class Image_Caption():
         if (cap.isOpened()== False): 
             print("Error opening video stream or file")
         subs = []
+        chunk_audio =[]
         if subtitles:
             ts0 = time.time()
-            folder_chunks, chunk_len = chunks_video(filename,clen=2000)
+            folder_chunks, chunk_len = chunks_video(filename,clen=90000)
             chunk_files = [f'{folder_chunks}/{f}' for f in sorted(os.listdir(folder_chunks))]
 
 
             frames_interval = fps*chunk_len
             print(f'Times passed for subtitles generation: {time.time()-ts0}')
             print(f'Frames interval:\t{frames_interval}')
+
+            for chunk in chunk_files:
+                chunk_audio.append(load_audio(chunk))
             
         # Read until video is completed
         subs_index=0
+        srt_file_index = 0 #count total subtitle segments accross all file
         index_segment = 0
+        all_results = []
+        times = []
+
         while(cap.isOpened()):
         # Capture frame-by-frame
             ret, frame = cap.read()
@@ -166,15 +226,25 @@ class Image_Caption():
 
                 if subtitles:
 
-
                     if frame_cnt%frames_interval==0:
                         index_segment = frame_cnt//frames_interval
-                        result = modelw.transcribe(f'{chunk_files[index_segment]}',language=languag)
+                        t0 = time.time()
+                        result = modelw.transcribe(chunk_audio[index_segment],language=languag)
+                        t1 = time.time() - t0
+                        times.append(t1)
+                        all_results.append(result)
                         for it in result['segments']:
+                            srt_file_index+=1
                             subs.append( ( int(round(fps*it["start"])+index_segment*frames_interval)
                                            ,int(round(it["end"]*fps)+index_segment*frames_interval),
                                            it["text"]))
-                        print(f'Start:\t{it["start"]}\tEnd:\t{it["end"]}Text:\t{it["text"]}')
+                            start_delta = timedelta(seconds=it["start"]+index_segment*chunk_len)
+                            end_delta = timedelta(seconds=it["end"]+index_segment*chunk_len)
+                            subs_objs.append(Subtitle(index=srt_file_index,
+                                                      start=start_delta,
+                                                      end=end_delta,
+                                                      content=it['text']))
+                            print(f'Start:\t{it["start"]}\tEnd:\t{it["end"]}Text:\t{it["text"]}')
                     try:
                         if subs[subs_index][1]>frame_cnt:
                             subtitle_text = subs[subs_index][2]
@@ -206,10 +276,10 @@ class Image_Caption():
                     print(caption)
                     print(f'\nBest score-> {bsc}:\t{best_score}')
                 if frame_cnt%mstack==0 and frame_cnt!=0:
-                    plt.figure(figsize = (17,2))
-                    plt.axis('off')
-                    plt.imshow(vis_frames)
-                    plt.show()
+                    # plt.figure(figsize = (17,2))
+                    # plt.axis('off')
+                    # plt.imshow(vis_frames)
+                    # plt.show()
                     vis_frames*=0
                 indx = (frame_cnt%mstack)
                 vis_frames[:,indx*mw:(indx+1)*mw,:] += mini_frame
@@ -221,7 +291,7 @@ class Image_Caption():
                         pil_image = Image.fromarray(frame)
                         font = ImageFont.truetype("/usr/share/fonts/truetype/freefont/FreeMono.ttf", 40, encoding="unic")
                         draw = ImageDraw.Draw(pil_image)
-                        draw.text((30, 30), subtitle_text, font=font,fill="#0000FF")
+                        draw.text((30, 30), f'{subtitle_text}\n{frame_cnt//fps}', font=font,fill="#0000FF")
                         frame = np.asarray(pil_image)
 
                         #frame = cv2.putText(frame, f'{subtitle_text}', org2, font,  fontScale, color2, thickness, cv2.LINE_AA)
@@ -231,10 +301,11 @@ class Image_Caption():
                 out.write(frame)
 
                 # Press Q on keyboard to  exit
-                if cv2.waitKey(20) & 0xFF == ord('q'):
+                if cv2.waitKey(2) & 0xFF == ord('q'):
                     break
 
                 prev = copy.deepcopy(frame)
+
                             
         # Break the loop
 
@@ -242,6 +313,15 @@ class Image_Caption():
                 break
         
         # When everything done, release the video capture object
+        all_test_subs = compose(subs_objs)
+        with open(f"{filename[:-4]}.srt", "w") as f:
+            f.write(all_test_subs)
+        in_segment=0
+        for seg in all_results:
+            for it in seg['segments']:#
+                print(f'Start:\t{int(round(fps*it["start"])+in_segment*frames_interval)}\tEnd:\t{int(round(fps*it["end"])+in_segment*frames_interval)}\tText:\t{it["text"]}')
+            in_segment+=1
+
         cap.release()
         
         # Closes all the frames
@@ -251,7 +331,142 @@ class Image_Caption():
 
         if folder_chunks is not None:
             shutil.rmtree(folder_chunks)
+        plt.title(f'{chunk_len}-{np.mean(times)}')
+        plt.plot(times)
+        plt.show()
 
+        print(times)
+
+    def subtitles_video(self,filename,is_url:bool=False,url:str='https://youtu.be/oTN7xO6emU0',languag:str='en',display:bool=False,save:bool=False):
+        if is_url:
+            os.system(f'yt-dlp --verbose  --recode-video mp4 {url} -o {filename}')
+            print('Finished downloading.')
+        font = 0
+        frame_cnt=-1
+        folder_chunks = None
+        chunk_len = None
+        chunk_files = []
+        subtitle_text = ''
+        modelw = whisper.load_model("medium")
+        subs_objs = []
+
+        cap = cv2.VideoCapture(filename)
+        fps = int(round(cap.get(cv2.CAP_PROP_FPS)))
+        size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        out = cv2.VideoWriter('sample_with_subs.mp4',cv2.VideoWriter_fourcc('m','p','4','v'), fps, size)
+
+        print(f"{fps} frames per second")
+
+ 
+        if (cap.isOpened()== False): 
+            print("Error opening video stream or file")
+        subs = []
+        chunk_audio =[]
+        chunks = False
+        if chunks:         
+            folder_chunks, frames_interval = chunks_video(filename,clen=10)
+            frames_interval = (frames_interval//1000)*fps
+
+        else:
+            folder_chunks, frames_interval = chunks_video(filename,clen=-1)
+
+        chunk_files = [f'{folder_chunks}/{f}' for f in sorted(os.listdir(folder_chunks))]
+
+
+        chunk_len = int(frames_interval//fps)
+        print(f'Main-Frames interval:\t{frames_interval}')
+
+        for chunk in chunk_files:
+            chunk_audio.append(load_audio(chunk))
+            
+        # Read until video is completed
+        subs_index=0
+        srt_file_index = 0 #count total subtitle segments accross all file
+        index_segment = 0
+        all_results = []
+        times = []
+
+        while(cap.isOpened()):
+        # Capture frame-by-frame
+            ret, frame = cap.read()
+            if ret == True:
+                frame_cnt +=1
+
+
+                if frame_cnt%frames_interval==0:
+                    index_segment = frame_cnt//frames_interval
+                    t0 = time.time()
+                    result = modelw.transcribe(chunk_audio[index_segment],language=languag)
+                    t1 = time.time() - t0
+                    times.append(t1)
+                    all_results.append(result)
+                    for it in result['segments']:
+                        srt_file_index+=1
+                        subs.append( ( int(round(fps*it["start"])+index_segment*frames_interval)
+                                        ,int(round(it["end"]*fps)+index_segment*frames_interval),
+                                        it["text"]))
+                        start_delta = timedelta(seconds=it["start"]+index_segment*chunk_len)
+                        end_delta = timedelta(seconds=it["end"]+index_segment*chunk_len)
+                        subs_objs.append(Subtitle(index=srt_file_index,
+                                                    start=start_delta,
+                                                    end=end_delta,
+                                                    content=it['text']))
+                        print(f'Start:\t{it["start"]}\tEnd:\t{it["end"]}Text:\t{it["text"]}')
+                try:
+                    if subs[subs_index][1]>frame_cnt:
+                        subtitle_text = subs[subs_index][2]
+                    elif subs_index<len(subs)-1:
+                        subs_index+=1
+                        subtitle_text = subs[subs_index][2]
+                    else:
+                        subtitle_text = ''
+                except IndexError as E:
+                    print(f'OIndex Error : {E}')
+
+
+
+
+                if display:
+                    try:
+                        #print(subtitle_text)
+                        pil_image = Image.fromarray(frame)
+                        font = ImageFont.truetype("/usr/share/fonts/truetype/freefont/FreeMono.ttf", 40, encoding="unic")
+                        draw = ImageDraw.Draw(pil_image)
+                        draw.text((30, 30), f'{subtitle_text}\n{frame_cnt//fps}', font=font,fill="#0000FF")
+                        frame = np.asarray(pil_image)
+
+                        #frame = cv2.putText(frame, f'{subtitle_text}', org2, font,  fontScale, color2, thickness, cv2.LINE_AA)
+                    except IndexError:
+                        pass
+                    cv2.imshow('Frame',frame)
+                    if save:
+                        out.write(frame)
+
+                # Press Q on keyboard to  exit
+                if cv2.waitKey(2) & 0xFF == ord('q'):
+                    break
+
+        # Break the loop
+
+            else: 
+                break
+        
+        # When everything done, release the video capture object
+        all_test_subs = compose(subs_objs)
+        with open(f"{filename[:-4]}.srt", "w") as f:
+            f.write(all_test_subs)
+
+        cap.release()
+        
+        # Closes all the frames
+        cv2.destroyAllWindows()
+        if save: 
+            out.release()
+
+        if folder_chunks is not None:
+            shutil.rmtree(folder_chunks)
+
+ 
     def cosine_distance_between_two_words(self,word1, word2):
         return (1- scipy.spatial.distance.cosine(self.w2v[word1], self.w2v[word2]))
 
